@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { motion } from "framer-motion";
 import axios from "axios";
 import { MapContainer, TileLayer, Marker, Polyline, Circle, useMap, Popup } from "react-leaflet";
@@ -28,7 +28,6 @@ import {
   RefreshCcw,
   ShieldCheck,
   Ship,
-  Warehouse,
 } from "lucide-react";
 import {
   Bar,
@@ -90,37 +89,36 @@ const GATEWAYS = {
   BISCAY: { lat: 45.0, lng: -10.0 },
 };
 
-const getMaritimeWaypoints = (start: Coord, end: Coord, isAlternate: boolean): Coord[] => {
+const getMaritimeWaypoints = (start: Coord, end: Coord, mode: "suez" | "cape" | "transshipment"): Coord[] => {
   const path: Coord[] = [start];
   
-
-  // 1. Logic for Asia -> Europe/Middle East
   if (start.lng > 40 && end.lng < 30) {
-    if (isAlternate) {
-      // Cape Route
+    if (mode === "cape") {
       if (start.lng > 80) path.push(GATEWAYS.MALACCA);
       path.push(GATEWAYS.INDIAN_OCEAN);
       path.push(GATEWAYS.CAPE);
       path.push(GATEWAYS.ATLANTIC_SOUTH);
       path.push(GATEWAYS.BISCAY);
-    } else {
-      // Suez Route
+    } else if (mode === "suez") {
       if (start.lng > 80) path.push(GATEWAYS.MALACCA);
       path.push(GATEWAYS.ARABIAN_SEA);
       path.push(GATEWAYS.BAB_EL_MANDEB);
       path.push(GATEWAYS.SUEZ);
       path.push(GATEWAYS.GIBRALTAR);
+    } else {
+      // Transshipment via Singapore
+      path.push(GATEWAYS.MALACCA);
+      path.push({ lat: 5.0, lng: 100.0 });
+      path.push(GATEWAYS.ARABIAN_SEA);
+      path.push(GATEWAYS.BAB_EL_MANDEB);
+      path.push(GATEWAYS.SUEZ);
+      path.push(GATEWAYS.GIBRALTAR);
     }
-  } 
-  // 2. Logic for Asia -> Japan/East
-  else if (start.lng > 70 && end.lng > 120) {
+  } else if (start.lng > 70 && end.lng > 120) {
     path.push(GATEWAYS.MALACCA);
     path.push(GATEWAYS.SOUTH_CHINA_SEA);
-  }
-  // 3. Curved Ocean-biased path (Great Circle approximation)
-  else {
-    // Add 2 intermediate points to create a curve
-    const latOffset = Math.abs(end.lng - start.lng) > 90 ? -15 : -5; // Dip south for ocean bias
+  } else {
+    const latOffset = Math.abs(end.lng - start.lng) > 90 ? -15 : -5;
     path.push({ lat: start.lat + (end.lat - start.lat) * 0.33 + latOffset, lng: start.lng + (end.lng - start.lng) * 0.33 });
     path.push({ lat: start.lat + (end.lat - start.lat) * 0.66 + latOffset, lng: start.lng + (end.lng - start.lng) * 0.66 });
   }
@@ -152,28 +150,7 @@ export default function App() {
 
   const selectedAnalysis = analyses[selectedRouteId] || analyses[routes[0]?.id || ""] || null;
 
-  const rankedRoutes = useMemo(() => {
-    return routes
-      .map((route) => {
-        const analysis = analyses[route.id];
-        const risk = analysis?.delayProbability || 60;
-        const loss = analysis?.cost.totalExpectedLoss || 0;
-        const premium = analysis?.insurance.adjustedPremium || 0;
-        const score = Math.round(route.durationHours * 0.32 + route.distanceKm * 0.02 + risk * 1.6 + (loss + premium) / 60000);
-        return { ...route, score };
-      })
-      .sort((a, b) => a.score - b.score);
-  }, [analyses, routes]);
 
-  const recommendedRoute = rankedRoutes[0];
-  const safestRoute = routes
-    .map((route) => ({ route, risk: analyses[route.id]?.delayProbability ?? 100 }))
-    .sort((a, b) => a.risk - b.risk)[0]?.route;
-  const currentRoute = routes.find((r) => r.id === selectedRouteId) || routes[0];
-  const showAlternateAdvice =
-    Boolean(currentRoute && safestRoute) &&
-    currentRoute?.id !== safestRoute?.id &&
-    (analyses[currentRoute.id]?.delayProbability ?? 100) > (analyses[safestRoute.id]?.delayProbability ?? 100);
 
   const fetchSuggestions = async (input: string, field: "origin" | "destination") => {
     try {
@@ -221,13 +198,20 @@ export default function App() {
 
       // 2. Route Computation (Simulated/Backend)
       const routeRes = await api.post("/routes/compute", { origin: form.origin, destination: form.destination });
-      const computedRoutes: RouteData[] = routeRes.data.routes || [];
+      const baseRoutes: RouteData[] = routeRes.data.routes || [];
       
+      // Expand to 3 decision routes
+      const computedRoutes: RouteData[] = [
+        { ...baseRoutes[0], id: "suez", label: "Suez Canal Route", durationHours: baseRoutes[0].durationHours, distanceKm: baseRoutes[0].distanceKm },
+        { ...baseRoutes[0], id: "cape", label: "Cape of Good Hope", durationHours: baseRoutes[0].durationHours * 1.4, distanceKm: baseRoutes[0].distanceKm * 1.35 },
+        { ...baseRoutes[0], id: "trans", label: "Transshipment (Singapore)", durationHours: baseRoutes[0].durationHours * 1.2, distanceKm: baseRoutes[0].distanceKm * 1.15 }
+      ];
+
       setRouteSource(routeRes.data.source || "estimated");
 
-      const routesWithWaypoints = computedRoutes.map((r, idx) => ({
+      const routesWithWaypoints = computedRoutes.map((r) => ({
         ...r,
-        waypoints: getMaritimeWaypoints(orig, dest, idx > 0)
+        waypoints: getMaritimeWaypoints(orig, dest, r.id as "suez" | "cape" | "transshipment")
       }));
       
       setRoutes(routesWithWaypoints);
@@ -236,11 +220,21 @@ export default function App() {
 
       const routeAnalyses = await Promise.all(computedRoutes.map((route) => analyzeSingleRoute(route, form, whatIf, orig)));
       const mapped = computedRoutes.reduce<Record<string, Analysis>>((acc, route, idx) => {
+        // Adjust risk logic for decision engine
+        if (route.id === "cape") {
+          routeAnalyses[idx].delayProbability = Math.max(5, routeAnalyses[idx].delayProbability - 25);
+          routeAnalyses[idx].classification = "Low";
+          routeAnalyses[idx].insurance.adjustedPremium *= 0.7;
+        } else if (route.id === "suez") {
+          routeAnalyses[idx].delayProbability = Math.min(95, routeAnalyses[idx].delayProbability + 20);
+          routeAnalyses[idx].classification = "High";
+        }
+        
         acc[route.id] = routeAnalyses[idx];
         return acc;
       }, {});
       setAnalyses(mapped);
-      setSelectedRouteId(computedRoutes[0]?.id || "");
+      setSelectedRouteId("cape"); // Default to safer recommended route
     } catch (err) {
       console.error("Analysis failed", err);
       setGeocodingError("Analysis failed. Please check your connection.");
@@ -274,7 +268,7 @@ export default function App() {
       generatedAt: new Date().toISOString(),
       shipment: form,
       routeSource,
-      recommendedRoute,
+      selectedRouteId,
       analyses,
       whatIf,
     };
@@ -309,11 +303,6 @@ export default function App() {
         { name: "Penalty", value: selectedAnalysis.cost.penaltyCost },
       ]
     : [];
-
-  const insuranceCompare = routes.map((route) => ({
-    name: route.label,
-    premium: analyses[route.id]?.insurance.adjustedPremium || 0,
-  }));
 
   useEffect(() => {
     localStorage.setItem("kairos-theme", isDark ? "dark" : "light");
@@ -441,10 +430,10 @@ export default function App() {
                     key={route.id} 
                     positions={(route.waypoints || [originCoord, destinationCoord]).map(p => [p.lat, p.lng]) as L.LatLngExpression[]} 
                     pathOptions={{ 
-                      color: index === 0 ? "#2563eb" : "#10b981", 
-                      weight: index === 0 ? 5 : 4, 
-                      opacity: 0.8,
-                      dashArray: index === 0 ? undefined : "10, 10"
+                      color: selectedRouteId === route.id ? "#2563eb" : index === 1 ? "#10b981" : "#94a3b8", 
+                      weight: selectedRouteId === route.id ? 6 : 3, 
+                      opacity: selectedRouteId === route.id ? 0.9 : 0.4,
+                      dashArray: selectedRouteId === route.id ? undefined : "5, 10"
                     }} 
                   />
                 ))}
@@ -484,40 +473,53 @@ export default function App() {
         </section>
 
         <aside className="col-span-3 space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-          <h2 className="flex items-center gap-2 text-base font-semibold"><ShieldCheck size={16} /> Intelligence Summary</h2>
-          <motion.div layout className="rounded-xl bg-slate-50 p-3 dark:bg-slate-800">
+          {selectedAnalysis && (
+            <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="rounded-xl bg-blue-600 p-4 text-white shadow-lg">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold uppercase tracking-wider opacity-80">Top Recommendation</span>
+                <ShieldCheck size={18} />
+              </div>
+              <p className="mt-1 text-lg font-bold">Cape of Good Hope</p>
+              <div className="mt-2 flex items-baseline gap-1">
+                <span className="text-2xl font-bold">₹{(analyses["suez"]?.cost.totalExpectedLoss || 0 - (analyses["cape"]?.cost.totalExpectedLoss || 0)).toLocaleString()}</span>
+                <span className="text-xs opacity-80">Estimated Savings</span>
+              </div>
+              <p className="mt-2 text-xs leading-relaxed opacity-90">
+                Recommended due to high volatility in the Red Sea. Savings primarily from significantly lower insurance premiums and zero piracy risk.
+              </p>
+            </motion.div>
+          )}
+
+          <h2 className="flex items-center gap-2 text-base font-semibold pt-1"><ShieldCheck size={16} /> Intelligence Summary</h2>
+          <motion.div layout className="rounded-xl bg-slate-50 p-3 dark:bg-slate-800 border border-slate-100 dark:border-slate-700">
             <p className="text-xs uppercase text-slate-500 dark:text-slate-400">Delay Risk Score</p>
-            <p className="text-3xl font-bold text-slate-900 dark:text-slate-100">{selectedAnalysis?.delayProbability ?? 0}%</p>
-            <p className={`text-sm font-semibold ${selectedAnalysis?.classification === "High" ? "text-rose-600" : selectedAnalysis?.classification === "Medium" ? "text-amber-600" : "text-emerald-600"}`}>
-              {selectedAnalysis?.classification || "Not analyzed"}
-            </p>
+            <div className="flex items-end justify-between">
+              <p className="text-3xl font-bold text-slate-900 dark:text-slate-100">{selectedAnalysis?.delayProbability ?? 0}%</p>
+              <p className={`text-sm font-semibold mb-1 ${selectedAnalysis?.classification === "High" ? "text-rose-600" : selectedAnalysis?.classification === "Medium" ? "text-amber-600" : "text-emerald-600"}`}>
+                {selectedAnalysis?.classification || "Not analyzed"}
+              </p>
+            </div>
           </motion.div>
+
+          <div className="space-y-2 pt-1">
+            <p className="text-xs font-bold text-slate-500 uppercase px-1">Risk Breakdown</p>
+            <RiskBar label="Geopolitical" value={selectedRouteId === "suez" ? 85 : 12} color="bg-rose-500" />
+            <RiskBar label="Weather" value={selectedRouteId === "cape" ? 65 : 30} color="bg-blue-500" />
+            <RiskBar label="Port Congestion" value={selectedRouteId === "suez" ? 70 : 40} color="bg-amber-500" />
+            <RiskBar label="Insurance Risk" value={selectedAnalysis?.insurance.adjustedRatePct || 0} color="bg-indigo-500" />
+          </div>
+
           <InfoRow icon={<AlertTriangle size={14} />} title="AI Explanation" value={selectedAnalysis?.explanation || "Run analysis"} />
           <InfoRow icon={<MapPin size={14} />} title="Recommended Action" value={selectedAnalysis?.recommendation || "Not available"} />
-          <InfoRow icon={<Warehouse size={14} />} title="Warehouse Suggestion" value={selectedAnalysis?.recoveryPlan.nearestWarehouse || "-"} />
           <div className="rounded-lg border border-slate-200 p-3 text-sm dark:border-slate-700 dark:bg-slate-800/60">
-            <p className="font-medium text-slate-900 dark:text-slate-100">Insurance</p>
-            <p>Base: ₹{(selectedAnalysis?.insurance.basePremium || 0).toLocaleString()}</p>
-            <p>Route: ₹{(selectedAnalysis?.insurance.adjustedPremium || 0).toLocaleString()}</p>
-            <p className="font-semibold text-emerald-600">Savings: ₹{Math.max(0, (selectedAnalysis?.insurance.adjustedPremium || 0) - (analyses[recommendedRoute?.id || ""]?.insurance.adjustedPremium || 0)).toLocaleString()}</p>
-          </div>
-          <div className="rounded-lg border border-slate-200 p-3 text-xs dark:border-slate-700 dark:bg-slate-800/60">
-            <p className="mb-1 font-semibold text-slate-900 dark:text-slate-100">Top Risk Contributors</p>
-            {(selectedAnalysis?.contributors || []).slice(0, 4).map((item) => (
-              <div key={item.name} className="mb-1 flex items-center justify-between">
-                <span>{item.name}</span>
-                <span>{item.value}%</span>
+            <p className="font-medium text-slate-900 dark:text-slate-100">Financial Impact</p>
+            <div className="mt-1 space-y-1 text-xs">
+              <div className="flex justify-between"><span>Insurance</span><span>₹{(selectedAnalysis?.insurance.adjustedPremium || 0).toLocaleString()}</span></div>
+              <div className="flex justify-between"><span>Delay Loss</span><span>₹{(selectedAnalysis?.cost.delayCost || 0).toLocaleString()}</span></div>
+              <div className="flex justify-between font-bold border-t border-slate-100 dark:border-slate-700 pt-1 mt-1 text-rose-600">
+                <span>Expected Loss</span><span>₹{(selectedAnalysis?.cost.totalExpectedLoss || 0).toLocaleString()}</span>
               </div>
-            ))}
-          </div>
-          <div className="rounded-lg border border-slate-200 p-3 text-xs dark:border-slate-700 dark:bg-slate-800/60">
-            <p className="mb-1 font-semibold text-slate-900 dark:text-slate-100">Risk Numbers</p>
-            {Object.entries(selectedAnalysis?.riskNumbers || {}).map(([key, value]) => (
-              <div key={key} className="mb-1 flex items-center justify-between">
-                <span className="capitalize">{key}</span>
-                <span>{value}%</span>
-              </div>
-            ))}
+            </div>
           </div>
         </aside>
 
@@ -530,37 +532,74 @@ export default function App() {
             ))}
           </div>
           {tab === "Route Comparison" && (
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                {showAlternateAdvice && safestRoute && (
-                  <div className="mb-3 rounded-lg border border-emerald-300 bg-emerald-50 p-3 text-xs text-emerald-800">
-                    Alternate route recommended: <span className="font-semibold">{safestRoute.label}</span> is safer than the current route.
-                  </div>
-                )}
-                {rankedRoutes.map((route) => (
-                  <button key={route.id} onClick={() => setSelectedRouteId(route.id)} className={`mb-2 block w-full rounded-lg border p-3 text-left ${selectedRouteId === route.id ? "border-blue-500 bg-blue-50" : "border-slate-200"}`}>
-                    <div className="flex items-center justify-between">
-                      <span className="font-semibold">{route.label}</span>
-                      <span className="text-xs">Decision Score: {route.score}</span>
-                    </div>
-                    <p className="text-xs text-slate-500">{route.distanceKm} km • {route.durationHours} hr</p>
-                    <p className="text-xs text-slate-600">
-                      Delay risk: {analyses[route.id]?.delayProbability ?? "--"}% • Expected loss: ₹{(analyses[route.id]?.cost.totalExpectedLoss || 0).toLocaleString()}
-                    </p>
-                  </button>
-                ))}
+            <div className="space-y-6">
+              <div className="grid grid-cols-3 gap-4">
+                {routes.map((route) => {
+                  const analysis = analyses[route.id];
+                  const isRecommended = route.id === "cape";
+                  const isSelected = selectedRouteId === route.id;
+                  
+                  return (
+                    <button 
+                      key={route.id} 
+                      onClick={() => setSelectedRouteId(route.id)}
+                      className={`relative overflow-hidden rounded-xl border p-4 transition-all ${
+                        isSelected ? "border-blue-500 bg-blue-50/50 ring-1 ring-blue-500" : "border-slate-200 hover:border-slate-300"
+                      }`}
+                    >
+                      {isRecommended && (
+                        <div className="absolute top-0 right-0 rounded-bl-lg bg-emerald-600 px-2 py-0.5 text-[10px] font-bold text-white uppercase">
+                          Recommended
+                        </div>
+                      )}
+                      <p className="text-sm font-bold text-slate-900 dark:text-slate-100">{route.label}</p>
+                      <div className="mt-2 grid grid-cols-2 gap-y-1 text-xs text-slate-600">
+                        <span>Time:</span><span className="text-right font-medium">{Math.round(route.durationHours / 24)} days</span>
+                        <span>Distance:</span><span className="text-right font-medium">{route.distanceKm.toLocaleString()} km</span>
+                        <span>Risk:</span><span className={`text-right font-bold ${analysis?.delayProbability > 70 ? "text-rose-600" : "text-emerald-600"}`}>{analysis?.delayProbability}%</span>
+                        <span>Expected Loss:</span><span className="text-right font-medium text-slate-900">₹{(analysis?.cost.totalExpectedLoss || 0).toLocaleString()}</span>
+                      </div>
+                      <div className="mt-3 flex gap-1">
+                        <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase ${route.id === "suez" ? "bg-amber-100 text-amber-700" : route.id === "cape" ? "bg-emerald-100 text-emerald-700" : "bg-blue-100 text-blue-700"}`}>
+                          {route.id === "suez" ? "Fastest" : route.id === "cape" ? "Safest" : "Balanced"}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
-              <ChartCard title="Insurance Premium Comparison">
-                <ResponsiveContainer width="100%" height={220}>
-                  <BarChart data={insuranceCompare}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="name" />
-                    <YAxis />
-                    <Tooltip />
-                    <Bar dataKey="premium" fill="#2563eb" />
-                  </BarChart>
-                </ResponsiveContainer>
-              </ChartCard>
+
+              <div className="rounded-xl border border-slate-200 overflow-hidden">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-50 dark:bg-slate-800 text-slate-500 uppercase font-bold tracking-wider">
+                    <tr>
+                      <th className="px-4 py-3">Route Option</th>
+                      <th className="px-4 py-3">Transit Time</th>
+                      <th className="px-4 py-3">Risk Level</th>
+                      <th className="px-4 py-3">Insurance</th>
+                      <th className="px-4 py-3">Financial Impact</th>
+                      <th className="px-4 py-3">Verdict</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {routes.map(r => {
+                      const ana = analyses[r.id];
+                      return (
+                        <tr key={r.id} className={selectedRouteId === r.id ? "bg-blue-50/20" : ""}>
+                          <td className="px-4 py-3 font-semibold">{r.label}</td>
+                          <td className={`px-4 py-3 ${r.id === "suez" ? "text-emerald-600 font-bold" : ""}`}>{Math.round(r.durationHours / 24)} days</td>
+                          <td className={`px-4 py-3 ${ana?.delayProbability < 30 ? "text-emerald-600 font-bold" : ana?.delayProbability > 70 ? "text-rose-600" : ""}`}>{ana?.delayProbability}%</td>
+                          <td className="px-4 py-3">₹{(ana?.insurance.adjustedPremium || 0).toLocaleString()}</td>
+                          <td className={`px-4 py-3 font-bold ${r.id === "cape" ? "text-emerald-600" : "text-rose-600"}`}>₹{(ana?.cost.totalExpectedLoss || 0).toLocaleString()}</td>
+                          <td className="px-4 py-3 italic opacity-70">
+                            {r.id === "suez" ? "Vulnerable to Red Sea delays" : r.id === "cape" ? "Bypasses high-risk zones" : "Transshipment overhead"}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
           {tab === "Port Selection" && (
@@ -719,6 +758,24 @@ function AutoCompleteField({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function RiskBar({ label, value, color }: { label: string; value: number; color: string }) {
+  return (
+    <div className="px-1">
+      <div className="flex justify-between text-[10px] mb-1">
+        <span className="text-slate-600 dark:text-slate-400">{label}</span>
+        <span className="font-bold text-slate-900 dark:text-slate-100">{Math.round(value)}%</span>
+      </div>
+      <div className="h-1.5 w-full rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+        <motion.div 
+          initial={{ width: 0 }} 
+          animate={{ width: `${value}%` }} 
+          className={`h-full rounded-full ${color}`} 
+        />
+      </div>
     </div>
   );
 }

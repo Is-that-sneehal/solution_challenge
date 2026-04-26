@@ -5,10 +5,12 @@ import { GoogleMap, Marker, Polyline, Circle, useJsApiLoader } from "@react-goog
 import {
   AlertTriangle,
   BarChart3,
+  Moon,
   Download,
   LocateFixed,
   MapPin,
   Minus,
+  Sun,
   Plus,
   RefreshCcw,
   ShieldCheck,
@@ -64,6 +66,10 @@ const countries = ["IN", "US", "CN", "AE", "NL", "SG", "JP", "DE", "BR"];
 const tabs = ["Route Comparison", "Port Selection", "Financial Impact", "Recovery Plan", "What-If Simulation"] as const;
 
 export default function App() {
+  const [isDark, setIsDark] = useState<boolean>(() => {
+    const saved = localStorage.getItem("kairos-theme");
+    return saved ? saved === "dark" : false;
+  });
   const [form, setForm] = useState(defaultForm);
   const [originSuggestions, setOriginSuggestions] = useState<Suggestion[]>([]);
   const [destinationSuggestions, setDestinationSuggestions] = useState<Suggestion[]>([]);
@@ -220,24 +226,36 @@ export default function App() {
     premium: analyses[route.id]?.insurance.adjustedPremium || 0,
   }));
 
+  useEffect(() => {
+    localStorage.setItem("kairos-theme", isDark ? "dark" : "light");
+  }, [isDark]);
+
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-900">
-      <header className="border-b border-slate-200 bg-white px-5 py-4 shadow-sm">
+    <div className={isDark ? "dark" : ""}>
+      <div className="min-h-screen bg-slate-100 text-slate-900 transition-colors dark:bg-slate-950 dark:text-slate-100">
+      <header className="border-b border-slate-200 bg-white px-5 py-4 shadow-sm transition-colors dark:border-slate-800 dark:bg-slate-900">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-semibold text-slate-800">Kairos Shield</h1>
-            <p className="text-sm text-slate-500">AI-powered supply chain intelligence</p>
+            <h1 className="text-2xl font-semibold text-slate-800 dark:text-slate-100">Kairos Shield</h1>
+            <p className="text-sm text-slate-500 dark:text-slate-400">AI-powered supply chain intelligence</p>
           </div>
           <div className="flex items-center gap-2">
             <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">Live Intelligence</span>
-            <button onClick={resetForm} className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium hover:bg-slate-50"><RefreshCcw size={14} /> Reset</button>
+            <button
+              onClick={() => setIsDark((prev) => !prev)}
+              className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700"
+            >
+              {isDark ? <Sun size={14} /> : <Moon size={14} />}
+              {isDark ? "Light" : "Dark"}
+            </button>
+            <button onClick={resetForm} className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700"><RefreshCcw size={14} /> Reset</button>
             <button onClick={exportReport} className="flex items-center gap-2 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"><Download size={14} /> Export Report</button>
           </div>
         </div>
       </header>
 
       <div className="grid grid-cols-12 gap-4 p-4">
-        <aside className="col-span-3 space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <aside className="col-span-3 space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
           <h2 className="flex items-center gap-2 text-base font-semibold"><Ship size={16} /> Shipment Planner</h2>
           <AutoCompleteField
             label="Origin"
@@ -283,24 +301,24 @@ export default function App() {
           ]} />
           <label className="text-xs font-medium text-slate-600">
             Shipment Value
-            <input type="number" value={form.shipmentValue} onChange={(e) => setForm((prev) => ({ ...prev, shipmentValue: Number(e.target.value || 0) }))} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none ring-blue-500 focus:ring-2" />
+            <input type="number" value={form.shipmentValue} onChange={(e) => setForm((prev) => ({ ...prev, shipmentValue: Number(e.target.value || 0) }))} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none ring-blue-500 focus:ring-2 dark:border-slate-700 dark:bg-slate-800" />
           </label>
           <div className="grid grid-cols-2 gap-2 pt-1">
             <button disabled={loading || !form.origin || !form.destination} onClick={analyzeRoute} className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">Analyze Route</button>
-            <button onClick={clearForm} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium">Clear</button>
+            <button onClick={clearForm} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium dark:border-slate-700 dark:bg-slate-800">Clear</button>
           </div>
         </aside>
 
-        <section className="col-span-6 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+        <section className="col-span-6 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm dark:border-slate-800 dark:bg-slate-900">
           <div className="mb-2 flex items-center justify-between gap-2">
             <h3 className="text-sm font-semibold text-slate-700">Interactive Logistics Map</h3>
             <div className="flex items-center gap-2">
-              <div className="flex gap-1 rounded-lg bg-slate-100 p-1 text-xs">
+              <div className="flex gap-1 rounded-lg bg-slate-100 p-1 text-xs dark:bg-slate-800">
                 <button onClick={() => setMapView("route")} className={`rounded-md px-3 py-1 ${mapView === "route" ? "bg-white shadow" : ""}`}>Route View</button>
                 <button onClick={() => setMapView("risk")} className={`rounded-md px-3 py-1 ${mapView === "risk" ? "bg-white shadow" : ""}`}>Risk Heatmap</button>
                 <button onClick={() => setMapView("ports")} className={`rounded-md px-3 py-1 ${mapView === "ports" ? "bg-white shadow" : ""}`}>Ports View</button>
               </div>
-              <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-1 shadow-sm">
+              <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-1 shadow-sm dark:border-slate-700 dark:bg-slate-800">
                 <button onClick={zoomOut} className="rounded p-1.5 hover:bg-slate-100" title="Zoom out"><Minus size={14} /></button>
                 <span className="min-w-10 text-center text-xs font-semibold text-slate-600">Z {mapZoom}</span>
                 <button onClick={zoomIn} className="rounded p-1.5 hover:bg-slate-100" title="Zoom in"><Plus size={14} /></button>
@@ -349,17 +367,17 @@ export default function App() {
               ports={selectedAnalysis?.smartPorts || []}
             />
           )}
-          <p className="mt-2 text-xs text-slate-500">
+          <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
             Route data source: <span className="font-semibold">{routeSource}</span>
             {selectedAnalysis?.fallbackLabel ? ` • ${selectedAnalysis.fallbackLabel}` : ""}
           </p>
         </section>
 
-        <aside className="col-span-3 space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <aside className="col-span-3 space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
           <h2 className="flex items-center gap-2 text-base font-semibold"><ShieldCheck size={16} /> Intelligence Summary</h2>
-          <motion.div layout className="rounded-xl bg-slate-50 p-3">
-            <p className="text-xs uppercase text-slate-500">Delay Risk Score</p>
-            <p className="text-3xl font-bold">{selectedAnalysis?.delayProbability ?? 0}%</p>
+          <motion.div layout className="rounded-xl bg-slate-50 p-3 dark:bg-slate-800">
+            <p className="text-xs uppercase text-slate-500 dark:text-slate-400">Delay Risk Score</p>
+            <p className="text-3xl font-bold text-slate-900 dark:text-slate-100">{selectedAnalysis?.delayProbability ?? 0}%</p>
             <p className={`text-sm font-semibold ${selectedAnalysis?.classification === "High" ? "text-rose-600" : selectedAnalysis?.classification === "Medium" ? "text-amber-600" : "text-emerald-600"}`}>
               {selectedAnalysis?.classification || "Not analyzed"}
             </p>
@@ -367,14 +385,14 @@ export default function App() {
           <InfoRow icon={<AlertTriangle size={14} />} title="AI Explanation" value={selectedAnalysis?.explanation || "Run analysis"} />
           <InfoRow icon={<MapPin size={14} />} title="Recommended Action" value={selectedAnalysis?.recommendation || "Not available"} />
           <InfoRow icon={<Warehouse size={14} />} title="Warehouse Suggestion" value={selectedAnalysis?.recoveryPlan.nearestWarehouse || "-"} />
-          <div className="rounded-lg border border-slate-200 p-3 text-sm">
-            <p className="font-medium">Insurance</p>
+          <div className="rounded-lg border border-slate-200 p-3 text-sm dark:border-slate-700 dark:bg-slate-800/60">
+            <p className="font-medium text-slate-900 dark:text-slate-100">Insurance</p>
             <p>Base: ₹{(selectedAnalysis?.insurance.basePremium || 0).toLocaleString()}</p>
             <p>Route: ₹{(selectedAnalysis?.insurance.adjustedPremium || 0).toLocaleString()}</p>
             <p className="font-semibold text-emerald-600">Savings: ₹{Math.max(0, (selectedAnalysis?.insurance.adjustedPremium || 0) - (analyses[recommendedRoute?.id || ""]?.insurance.adjustedPremium || 0)).toLocaleString()}</p>
           </div>
-          <div className="rounded-lg border border-slate-200 p-3 text-xs">
-            <p className="mb-1 font-semibold">Top Risk Contributors</p>
+          <div className="rounded-lg border border-slate-200 p-3 text-xs dark:border-slate-700 dark:bg-slate-800/60">
+            <p className="mb-1 font-semibold text-slate-900 dark:text-slate-100">Top Risk Contributors</p>
             {(selectedAnalysis?.contributors || []).slice(0, 4).map((item) => (
               <div key={item.name} className="mb-1 flex items-center justify-between">
                 <span>{item.name}</span>
@@ -382,8 +400,8 @@ export default function App() {
               </div>
             ))}
           </div>
-          <div className="rounded-lg border border-slate-200 p-3 text-xs">
-            <p className="mb-1 font-semibold">Risk Numbers</p>
+          <div className="rounded-lg border border-slate-200 p-3 text-xs dark:border-slate-700 dark:bg-slate-800/60">
+            <p className="mb-1 font-semibold text-slate-900 dark:text-slate-100">Risk Numbers</p>
             {Object.entries(selectedAnalysis?.riskNumbers || {}).map(([key, value]) => (
               <div key={key} className="mb-1 flex items-center justify-between">
                 <span className="capitalize">{key}</span>
@@ -393,10 +411,10 @@ export default function App() {
           </div>
         </aside>
 
-        <section className="col-span-12 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <section className="col-span-12 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
           <div className="mb-3 flex flex-wrap gap-2">
             {tabs.map((item) => (
-              <button key={item} onClick={() => setTab(item)} className={`rounded-lg px-3 py-1.5 text-sm ${tab === item ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-700"}`}>
+              <button key={item} onClick={() => setTab(item)} className={`rounded-lg px-3 py-1.5 text-sm ${tab === item ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200"}`}>
                 {item}
               </button>
             ))}
@@ -525,6 +543,7 @@ export default function App() {
           )}
         </section>
       </div>
+      </div>
     </div>
   );
 }
@@ -570,11 +589,11 @@ function AutoCompleteField({
               onDismiss();
             }
           }}
-          className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none ring-blue-500 focus:ring-2"
+          className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none ring-blue-500 focus:ring-2 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
         />
       </label>
       {showSuggestions && (
-        <div className="mt-1 max-h-40 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-sm">
+        <div className="mt-1 max-h-40 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
           {suggestions.map((item) => (
             <button
               key={`${item.description}-${item.placeId || ""}`}
@@ -583,7 +602,7 @@ function AutoCompleteField({
                 setIsFocused(false);
                 onDismiss();
               }}
-              className="block w-full border-b border-slate-100 px-3 py-2 text-left text-xs hover:bg-slate-50"
+              className="block w-full border-b border-slate-100 px-3 py-2 text-left text-xs hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-700"
             >
               {item.description}
             </button>
@@ -606,9 +625,9 @@ function SelectField({
   options: { value: string; label: string }[];
 }) {
   return (
-    <label className="text-xs font-medium text-slate-600">
+    <label className="text-xs font-medium text-slate-600 dark:text-slate-300">
       {label}
-      <select value={value} onChange={(e) => onChange(e.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none ring-blue-500 focus:ring-2">
+      <select value={value} onChange={(e) => onChange(e.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none ring-blue-500 focus:ring-2 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
         {options.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
       </select>
     </label>
@@ -617,9 +636,9 @@ function SelectField({
 
 function InfoRow({ icon, title, value }: { icon: ReactNode; title: string; value: string }) {
   return (
-    <div className="rounded-lg border border-slate-200 p-3">
-      <p className="mb-1 flex items-center gap-1 text-xs font-medium text-slate-500">{icon} {title}</p>
-      <p className="text-sm">{value}</p>
+    <div className="rounded-lg border border-slate-200 p-3 dark:border-slate-700 dark:bg-slate-800/60">
+      <p className="mb-1 flex items-center gap-1 text-xs font-medium text-slate-500 dark:text-slate-400">{icon} {title}</p>
+      <p className="text-sm text-slate-900 dark:text-slate-100">{value}</p>
     </div>
   );
 }

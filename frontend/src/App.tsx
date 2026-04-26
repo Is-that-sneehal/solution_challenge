@@ -1,7 +1,20 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { motion } from "framer-motion";
 import axios from "axios";
-import { GoogleMap, Marker, Polyline, Circle, useJsApiLoader } from "@react-google-maps/api";
+import { MapContainer, TileLayer, Marker, Polyline, Circle, useMap, Popup } from "react-leaflet";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
+
+// Fix for default marker icons in Leaflet + React
+import icon from 'leaflet/dist/images/marker-icon.png';
+import iconShadow from 'leaflet/dist/images/marker-shadow.png';
+let DefaultIcon = L.icon({
+    iconUrl: icon,
+    shadowUrl: iconShadow,
+    iconSize: [25, 41],
+    iconAnchor: [12, 41]
+});
+L.Marker.prototype.options.icon = DefaultIcon;
 import {
   AlertTriangle,
   BarChart3,
@@ -31,7 +44,7 @@ import {
 } from "recharts";
 
 type Suggestion = { description: string; placeId?: string };
-type RouteData = { id: string; label: string; distanceKm: number; durationHours: number; polyline?: string };
+type RouteData = { id: string; label: string; distanceKm: number; durationHours: number; polyline?: string; waypoints?: Coord[] };
 type Coord = { lat: number; lng: number };
 type Analysis = {
   source: string;
@@ -51,9 +64,8 @@ type Analysis = {
 };
 
 const api = axios.create({ baseURL: "/api" });
-const mapsLibraries: "places"[] = ["places"];
-const defaultOrigin: Coord = { lat: 20.5937, lng: 78.9629 };
-const defaultDestination: Coord = { lat: 25.2048, lng: 55.2708 };
+const defaultOrigin: Coord = { lat: 18.93, lng: 72.84 }; // Mumbai
+const defaultDestination: Coord = { lat: 51.92, lng: 4.47 }; // Rotterdam
 const defaultForm = {
   origin: "",
   destination: "",
@@ -64,6 +76,58 @@ const defaultForm = {
 };
 const countries = ["IN", "US", "CN", "AE", "NL", "SG", "JP", "DE", "BR"];
 const tabs = ["Route Comparison", "Port Selection", "Financial Impact", "Recovery Plan", "What-If Simulation"] as const;
+
+const GATEWAYS = {
+  SUEZ: { lat: 29.9, lng: 32.5 },
+  BAB_EL_MANDEB: { lat: 12.6, lng: 43.5 },
+  MALACCA: { lat: 2.5, lng: 102.5 },
+  GIBRALTAR: { lat: 36.1, lng: -5.3 },
+  CAPE: { lat: -34.8, lng: 20.0 },
+  SOUTH_CHINA_SEA: { lat: 15.0, lng: 115.0 },
+  ARABIAN_SEA: { lat: 15.0, lng: 65.0 },
+  INDIAN_OCEAN: { lat: -5.0, lng: 80.0 },
+  ATLANTIC_SOUTH: { lat: -20.0, lng: -10.0 },
+  BISCAY: { lat: 45.0, lng: -10.0 },
+};
+
+const getMaritimeWaypoints = (start: Coord, end: Coord, isAlternate: boolean): Coord[] => {
+  const path: Coord[] = [start];
+  
+
+  // 1. Logic for Asia -> Europe/Middle East
+  if (start.lng > 40 && end.lng < 30) {
+    if (isAlternate) {
+      // Cape Route
+      if (start.lng > 80) path.push(GATEWAYS.MALACCA);
+      path.push(GATEWAYS.INDIAN_OCEAN);
+      path.push(GATEWAYS.CAPE);
+      path.push(GATEWAYS.ATLANTIC_SOUTH);
+      path.push(GATEWAYS.BISCAY);
+    } else {
+      // Suez Route
+      if (start.lng > 80) path.push(GATEWAYS.MALACCA);
+      path.push(GATEWAYS.ARABIAN_SEA);
+      path.push(GATEWAYS.BAB_EL_MANDEB);
+      path.push(GATEWAYS.SUEZ);
+      path.push(GATEWAYS.GIBRALTAR);
+    }
+  } 
+  // 2. Logic for Asia -> Japan/East
+  else if (start.lng > 70 && end.lng > 120) {
+    path.push(GATEWAYS.MALACCA);
+    path.push(GATEWAYS.SOUTH_CHINA_SEA);
+  }
+  // 3. Curved Ocean-biased path (Great Circle approximation)
+  else {
+    // Add 2 intermediate points to create a curve
+    const latOffset = Math.abs(end.lng - start.lng) > 90 ? -15 : -5; // Dip south for ocean bias
+    path.push({ lat: start.lat + (end.lat - start.lat) * 0.33 + latOffset, lng: start.lng + (end.lng - start.lng) * 0.33 });
+    path.push({ lat: start.lat + (end.lat - start.lat) * 0.66 + latOffset, lng: start.lng + (end.lng - start.lng) * 0.66 });
+  }
+
+  path.push(end);
+  return path;
+};
 
 export default function App() {
   const [isDark, setIsDark] = useState<boolean>(() => {
@@ -84,9 +148,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [whatIf, setWhatIf] = useState({ weather: 0.45, congestion: 0.52, geopolitical: 0.48, shadowFleet: 0.44 });
   const [selectedRouteId, setSelectedRouteId] = useState<string>("");
-
-  const mapsKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
-  const { isLoaded } = useJsApiLoader({ id: "kairos-shield-map", googleMapsApiKey: mapsKey || "", libraries: mapsLibraries });
+  const [geocodingError, setGeocodingError] = useState<string | null>(null);
 
   const selectedAnalysis = analyses[selectedRouteId] || analyses[routes[0]?.id || ""] || null;
 
@@ -137,14 +199,38 @@ export default function App() {
   const analyzeRoute = async () => {
     if (!form.origin || !form.destination) return;
     setLoading(true);
+    setGeocodingError(null);
     try {
+      // 1. Geocoding via Nominatim
+      const geocode = async (q: string) => {
+        const { data } = await axios.get(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=1`);
+        if (data && data.length > 0) {
+          return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+        }
+        return null;
+      };
+
+      const orig = await geocode(form.origin);
+      const dest = await geocode(form.destination);
+
+      if (!orig || !dest) {
+        setGeocodingError(`Could not find ${!orig ? "origin" : "destination"}. Please try a more specific name.`);
+        setLoading(false);
+        return;
+      }
+
+      // 2. Route Computation (Simulated/Backend)
       const routeRes = await api.post("/routes/compute", { origin: form.origin, destination: form.destination });
       const computedRoutes: RouteData[] = routeRes.data.routes || [];
-      const orig = routeRes.data.origin || defaultOrigin;
-      const dest = routeRes.data.destination || defaultDestination;
-
+      
       setRouteSource(routeRes.data.source || "estimated");
-      setRoutes(computedRoutes);
+
+      const routesWithWaypoints = computedRoutes.map((r, idx) => ({
+        ...r,
+        waypoints: getMaritimeWaypoints(orig, dest, idx > 0)
+      }));
+      
+      setRoutes(routesWithWaypoints);
       setOriginCoord(orig);
       setDestinationCoord(dest);
 
@@ -155,6 +241,9 @@ export default function App() {
       }, {});
       setAnalyses(mapped);
       setSelectedRouteId(computedRoutes[0]?.id || "");
+    } catch (err) {
+      console.error("Analysis failed", err);
+      setGeocodingError("Analysis failed. Please check your connection.");
     } finally {
       setLoading(false);
     }
@@ -326,47 +415,68 @@ export default function App() {
               </div>
             </div>
           </div>
-          {mapsKey && isLoaded ? (
-            <GoogleMap
-              mapContainerStyle={{ width: "100%", height: "520px" }}
-              center={originCoord}
+          <div className="relative h-[520px] w-full overflow-hidden rounded-xl border border-slate-200 dark:border-slate-800">
+            <MapContainer
+              center={[originCoord.lat, originCoord.lng] as L.LatLngExpression}
               zoom={mapZoom}
-              options={{
-                mapTypeControl: false,
-                fullscreenControl: false,
-                streetViewControl: false,
-                zoomControl: false,
-                styles: [
-                  { featureType: "poi", stylers: [{ visibility: "off" }] },
-                  { featureType: "transit", stylers: [{ visibility: "off" }] },
-                ],
-              }}
+              style={{ height: "100%", width: "100%" }}
+              zoomControl={false}
             >
-              <Marker position={originCoord} label="O" />
-              <Marker position={destinationCoord} label="D" />
+              <TileLayer
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                className={isDark ? "map-tiles-dark" : ""}
+              />
+              <MapController center={originCoord} zoom={mapZoom} routes={routes} />
+              <Marker position={[originCoord.lat, originCoord.lng] as L.LatLngExpression}>
+                <Popup>Origin: {form.origin}</Popup>
+              </Marker>
+              <Marker position={[destinationCoord.lat, destinationCoord.lng] as L.LatLngExpression}>
+                <Popup>Destination: {form.destination}</Popup>
+              </Marker>
+              
               {(mapView === "route" || mapView === "risk") &&
                 routes.map((route, index) => (
-                  <Polyline key={route.id} path={[originCoord, destinationCoord]} options={{ strokeColor: index === 0 ? "#2563eb" : "#10b981", strokeWeight: index === 0 ? 5 : 4, strokeOpacity: 0.85 }} />
+                  <Polyline 
+                    key={route.id} 
+                    positions={(route.waypoints || [originCoord, destinationCoord]).map(p => [p.lat, p.lng]) as L.LatLngExpression[]} 
+                    pathOptions={{ 
+                      color: index === 0 ? "#2563eb" : "#10b981", 
+                      weight: index === 0 ? 5 : 4, 
+                      opacity: 0.8,
+                      dashArray: index === 0 ? undefined : "10, 10"
+                    }} 
+                  />
                 ))}
               {mapView === "risk" &&
                 (selectedAnalysis?.riskZones || []).map((zone) => (
-                  <Circle key={zone.name} center={{ lat: zone.lat, lng: zone.lng }} radius={zone.radiusKm * 1000} options={{ fillColor: "#ef4444", fillOpacity: 0.12, strokeColor: "#dc2626", strokeWeight: 1 }} />
+                  <Circle 
+                    key={zone.name} 
+                    center={[zone.lat, zone.lng] as L.LatLngExpression} 
+                    radius={zone.radiusKm * 1000} 
+                    pathOptions={{ fillColor: "#ef4444", fillOpacity: 0.15, color: "#dc2626", weight: 1 }} 
+                  />
                 ))}
               {mapView === "ports" &&
-                (selectedAnalysis?.smartPorts || []).slice(0, 5).map((port, idx) => (
-                  <Marker key={port.name} position={{ lat: originCoord.lat + idx * 1.8, lng: originCoord.lng + idx * 2.2 }} label="P" />
+                (selectedAnalysis?.smartPorts || []).slice(0, 8).map((port, idx) => (
+                  <Marker 
+                    key={port.name} 
+                    position={[originCoord.lat + (idx - 4) * 2, originCoord.lng + (idx - 4) * 3] as L.LatLngExpression}
+                  >
+                    <Popup>{port.name} (Congestion: {Math.round(port.congestion * 100)}%)</Popup>
+                  </Marker>
                 ))}
-            </GoogleMap>
-          ) : (
-            <FallbackMap
-              mapView={mapView}
-              zoom={mapZoom}
-              origin={originCoord}
-              destination={destinationCoord}
-              riskZones={selectedAnalysis?.riskZones || []}
-              ports={selectedAnalysis?.smartPorts || []}
-            />
-          )}
+            </MapContainer>
+            {geocodingError && (
+              <div className="absolute inset-0 z-[1000] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm">
+                <div className="bg-white dark:bg-slate-900 p-4 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 text-center max-w-xs">
+                  <AlertTriangle className="mx-auto mb-2 text-rose-500" size={24} />
+                  <p className="text-sm font-bold text-slate-800 dark:text-slate-100">{geocodingError}</p>
+                  <button onClick={() => setGeocodingError(null)} className="mt-3 text-xs font-semibold text-blue-600">Dismiss</button>
+                </div>
+              </div>
+            )}
+          </div>
           <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
             Route data source: <span className="font-semibold">{routeSource}</span>
             {selectedAnalysis?.fallbackLabel ? ` • ${selectedAnalysis.fallbackLabel}` : ""}
@@ -661,50 +771,20 @@ function Slider({ label, value, onChange }: { label: string; value: number; onCh
   );
 }
 
-function FallbackMap({
-  mapView,
-  zoom,
-  origin,
-  destination,
-  riskZones,
-  ports,
-}: {
-  mapView: "route" | "risk" | "ports";
-  zoom: number;
-  origin: Coord;
-  destination: Coord;
-  riskZones: Analysis["riskZones"];
-  ports: Analysis["smartPorts"];
-}) {
-  const toX = (lng: number) => ((lng + 180) / 360) * 100;
-  const toY = (lat: number) => ((90 - lat) / 180) * 100;
-  const scale = 1 + (zoom - 3) * 0.08;
-  return (
-    <div className="relative h-[520px] overflow-hidden rounded-xl bg-gradient-to-br from-sky-100 via-slate-100 to-emerald-100">
-      <svg viewBox="0 0 100 100" className="h-full w-full">
-        <g transform={`translate(${50 - 50 * scale} ${50 - 50 * scale}) scale(${scale})`}>
-        <rect width="100" height="100" fill="transparent" />
-        <path d="M8,22 C26,10 42,16 53,28 C68,44 82,44 96,32 L96,86 L8,86 Z" fill="#dbeafe" />
-        <path d="M5,48 C22,35 39,42 56,57 C70,69 86,72 96,62 L96,95 L5,95 Z" fill="#c7d2fe" opacity="0.55" />
-        {(mapView === "route" || mapView === "risk") && (
-          <>
-            <line x1={toX(origin.lng)} y1={toY(origin.lat)} x2={toX(destination.lng)} y2={toY(destination.lat)} stroke="#2563eb" strokeWidth="1.1" strokeDasharray="1.5 1" />
-            <line x1={toX(origin.lng)} y1={toY(origin.lat) + 2} x2={toX(destination.lng)} y2={toY(destination.lat) + 1.5} stroke="#10b981" strokeWidth="0.9" strokeDasharray="1 1" />
-          </>
-        )}
-        <circle cx={toX(origin.lng)} cy={toY(origin.lat)} r="1.2" fill="#1d4ed8" />
-        <circle cx={toX(destination.lng)} cy={toY(destination.lat)} r="1.2" fill="#0f766e" />
-        {mapView === "risk" &&
-          riskZones.map((zone) => (
-            <circle key={zone.name} cx={toX(zone.lng)} cy={toY(zone.lat)} r={Math.max(2.5, zone.radiusKm / 140)} fill="#ef4444" opacity="0.18" />
-          ))}
-        {mapView === "ports" &&
-          ports.slice(0, 5).map((port, index) => (
-            <circle key={port.name} cx={12 + index * 14} cy={20 + index * 10} r="1.1" fill="#0ea5e9" />
-          ))}
-        </g>
-      </svg>
-      <div className="absolute left-3 top-3 rounded bg-white/90 px-3 py-2 text-xs text-slate-600">Estimated map view (set `VITE_GOOGLE_MAPS_API_KEY` for live map).</div>
-    </div>
-  );
+function MapController({ center, zoom, routes }: { center: Coord; zoom: number; routes: RouteData[] }) {
+  const map = useMap();
+  useEffect(() => {
+    if (routes.length > 0) {
+      const allWaypoints = routes.flatMap(r => r.waypoints || []);
+      if (allWaypoints.length > 0) {
+        const bounds = L.latLngBounds(allWaypoints.map(p => [p.lat, p.lng]));
+        map.fitBounds(bounds, { padding: [50, 50] });
+      } else {
+        map.setView([center.lat, center.lng], zoom);
+      }
+    } else {
+      map.setView([center.lat, center.lng], zoom);
+    }
+  }, [center, zoom, routes]);
+  return null;
 }

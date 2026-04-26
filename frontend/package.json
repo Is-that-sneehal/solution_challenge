@@ -13,13 +13,16 @@
     "@react-google-maps/api": "^2.20.8",
     "axios": "^1.15.2",
     "framer-motion": "^12.38.0",
+    "leaflet": "^1.9.4",
     "lucide-react": "^1.11.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
+    "react-leaflet": "^5.0.0",
     "recharts": "^3.8.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@types/leaflet": "^1.9.21",
     "@types/node": "^24.12.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",

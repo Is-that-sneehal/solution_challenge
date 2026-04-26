@@ -7,3 +7,11 @@ body {
   font-family: Inter, "Segoe UI", system-ui, sans-serif;
   background: #020617;
 }
+
+.map-tiles-dark {
+  filter: invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%);
+}
+
+.leaflet-container {
+  background: #0f172a !important;
+}

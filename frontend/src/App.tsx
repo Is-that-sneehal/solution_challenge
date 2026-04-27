@@ -467,14 +467,32 @@ export default function App() {
                   />
                 ))}
               {mapView === "risk" &&
-                (selectedAnalysis?.riskZones || []).map((zone) => (
-                  <Circle 
-                    key={zone.name} 
-                    center={[zone.lat, zone.lng] as L.LatLngExpression} 
-                    radius={zone.radiusKm * 1000} 
-                    pathOptions={{ fillColor: "#ef4444", fillOpacity: 0.15, color: "#dc2626", weight: 1 }} 
-                  />
-                ))}
+                [
+                  { name: "Red Sea / Suez Canal", lat: 15.5, lng: 41.0, radiusKm: 400, level: "high" as const },
+                  { name: "Strait of Hormuz", lat: 26.5, lng: 56.5, radiusKm: 200, level: "high" as const },
+                  { name: "Gulf of Aden", lat: 12.0, lng: 48.0, radiusKm: 350, level: "high" as const },
+                  { name: "Strait of Malacca", lat: 2.5, lng: 101.5, radiusKm: 250, level: "medium" as const },
+                  { name: "South China Sea", lat: 12.0, lng: 114.0, radiusKm: 500, level: "medium" as const },
+                  { name: "Cape of Good Hope", lat: -34.5, lng: 18.5, radiusKm: 300, level: "medium" as const },
+                  { name: "Rotterdam / North Sea", lat: 52.0, lng: 4.0, radiusKm: 200, level: "low" as const },
+                  { name: "Arabian Sea", lat: 18.0, lng: 65.0, radiusKm: 400, level: "low" as const },
+                ].map((zone) => {
+                  const colors = { high: { fill: "#ef4444", stroke: "#dc2626" }, medium: { fill: "#f59e0b", stroke: "#d97706" }, low: { fill: "#3b82f6", stroke: "#2563eb" } };
+                  const c = colors[zone.level];
+                  return (
+                    <Circle
+                      key={zone.name}
+                      center={[zone.lat, zone.lng] as L.LatLngExpression}
+                      radius={zone.radiusKm * 1000}
+                      pathOptions={{ fillColor: c.fill, fillOpacity: 0.18, color: c.stroke, weight: 2, opacity: 0.6 }}
+                    >
+                      <Popup>
+                        <strong>{zone.name}</strong><br />
+                        Risk: {zone.level === "high" ? "🔴 High" : zone.level === "medium" ? "🟠 Medium" : "🔵 Low"}
+                      </Popup>
+                    </Circle>
+                  );
+                })}
               {mapView === "ports" &&
                 (selectedAnalysis?.smartPorts || []).slice(0, 8).map((port, idx) => (
                   <Marker 

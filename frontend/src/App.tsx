@@ -55,7 +55,7 @@ type Analysis = {
   recommendation: string;
   explanation: string;
   insurance: { basePremium: number; adjustedPremium: number; adjustedRatePct: number };
-  cost: { transportCost: number; delayCost: number; storageCost: number; penaltyCost: number; totalExpectedLoss: number };
+  cost: { transportCost: number; riskCost: number; timeCost: number; distanceCost: number; expectedProfit: number };
   smartPorts: { name: string; congestion: number; capacity: number; risk: number; shipCompatible: boolean; waitHours: number; score: number }[];
   recoveryPlan: { nearestWarehouse: string; alternateModes: string[]; potentialDelayReductionHours: number; potentialSavings: number; suggestedPort: string };
   riskZones: { name: string; lat: number; lng: number; radiusKm: number; weight: number }[];
@@ -76,60 +76,116 @@ const defaultForm = {
 const countries = ["IN", "US", "CN", "AE", "NL", "SG", "JP", "DE", "BR"];
 const tabs = ["Route Comparison", "Port Selection", "Financial Impact", "Recovery Plan", "What-If Simulation"] as const;
 
-const GATEWAYS = {
-  SUEZ: { lat: 29.9, lng: 32.5 },
-  BAB_EL_MANDEB: { lat: 12.6, lng: 43.5 },
-  MALACCA: { lat: 2.5, lng: 102.5 },
-  GIBRALTAR: { lat: 36.1, lng: -5.3 },
-  CAPE: { lat: -34.8, lng: 20.0 },
-  SOUTH_CHINA_SEA: { lat: 15.0, lng: 115.0 },
-  ARABIAN_SEA: { lat: 15.0, lng: 65.0 },
-  INDIAN_OCEAN: { lat: -5.0, lng: 80.0 },
-  ATLANTIC_SOUTH: { lat: -20.0, lng: -10.0 },
-  BISCAY: { lat: 45.0, lng: -10.0 },
+// ─── Supported Demo Ports ────────────────────────────────────────
+const DEMO_PORTS: Record<string, Coord> = {
+  "mumbai port": { lat: 18.95, lng: 72.84 },
+  "dubai port": { lat: 25.01, lng: 55.06 },
+  "jebel ali port": { lat: 25.01, lng: 55.06 },
+  "rotterdam port": { lat: 51.95, lng: 4.14 },
+  "hamburg port": { lat: 53.54, lng: 9.99 },
+  "singapore port": { lat: 1.26, lng: 103.84 },
+  "chennai port": { lat: 13.10, lng: 80.29 },
+  "cape town port": { lat: -33.92, lng: 18.42 },
+  "melbourne port": { lat: -37.84, lng: 144.92 },
 };
 
-const getMaritimeWaypoints = (start: Coord, end: Coord, mode: "suez" | "cape" | "transshipment"): Coord[] => {
-  const path: Coord[] = [start];
-  
-  if (start.lng > 40 && end.lng < 30) {
-    if (mode === "cape") {
-      if (start.lng > 80) path.push(GATEWAYS.MALACCA);
-      path.push(GATEWAYS.INDIAN_OCEAN);
-      path.push(GATEWAYS.CAPE);
-      path.push(GATEWAYS.ATLANTIC_SOUTH);
-      path.push(GATEWAYS.BISCAY);
-    } else if (mode === "suez") {
-      if (start.lng > 80) path.push(GATEWAYS.MALACCA);
-      path.push(GATEWAYS.ARABIAN_SEA);
-      path.push(GATEWAYS.BAB_EL_MANDEB);
-      path.push(GATEWAYS.SUEZ);
-      path.push(GATEWAYS.GIBRALTAR);
-    } else {
-      // Transshipment via Singapore
-      path.push(GATEWAYS.MALACCA);
-      path.push({ lat: 5.0, lng: 100.0 });
-      path.push(GATEWAYS.ARABIAN_SEA);
-      path.push(GATEWAYS.BAB_EL_MANDEB);
-      path.push(GATEWAYS.SUEZ);
-      path.push(GATEWAYS.GIBRALTAR);
-    }
-  } else if (start.lng > 70 && end.lng > 120) {
-    path.push(GATEWAYS.MALACCA);
-    path.push(GATEWAYS.SOUTH_CHINA_SEA);
-  } else {
-    const latOffset = Math.abs(end.lng - start.lng) > 90 ? -15 : -5;
-    path.push({ lat: start.lat + (end.lat - start.lat) * 0.33 + latOffset, lng: start.lng + (end.lng - start.lng) * 0.33 });
-    path.push({ lat: start.lat + (end.lat - start.lat) * 0.66 + latOffset, lng: start.lng + (end.lng - start.lng) * 0.66 });
+function resolveDemo(input: string): { key: string; coord: Coord } | null {
+  const n = input.toLowerCase().trim();
+  for (const [key, coord] of Object.entries(DEMO_PORTS)) {
+    if (n.includes(key) || key.includes(n)) return { key, coord };
   }
+  return null;
+}
 
-  path.push(end);
-  return path;
+// ─── Fixed Demo Route Waypoints (3 options per corridor) ─────────
+type RouteTemplate = { id: string; label: string; waypoints: Coord[]; distanceKm: number; durationHours: number; riskPct: number; explanation: string };
+type CorridorSet = RouteTemplate[];
+
+const DEMO_CORRIDORS: Record<string, CorridorSet> = {
+  "mumbai port→rotterdam port": [
+    { id: "suez", label: "Suez Canal (Fastest)", waypoints: [{lat:18.95,lng:72.84},{lat:14,lng:65},{lat:12,lng:45},{lat:18,lng:40},{lat:30,lng:32},{lat:36,lng:18},{lat:51.95,lng:4.14}], distanceKm: 11200, durationHours: 336, riskPct: 68, explanation: "Fastest route via Suez Canal. Higher geopolitical risk due to Red Sea corridor." },
+    { id: "cape", label: "Cape of Good Hope (Safer)", waypoints: [{lat:18.95,lng:72.84},{lat:10,lng:65},{lat:-5,lng:55},{lat:-20,lng:30},{lat:-35,lng:18},{lat:-20,lng:0},{lat:20,lng:-12},{lat:40,lng:-8},{lat:51.95,lng:4.14}], distanceKm: 15400, durationHours: 480, riskPct: 18, explanation: "Safest route avoiding all conflict zones. Longer transit but minimal risk exposure." },
+    { id: "balanced", label: "Balanced Route", waypoints: [{lat:18.95,lng:72.84},{lat:12,lng:60},{lat:10,lng:48},{lat:20,lng:38},{lat:32,lng:30},{lat:38,lng:15},{lat:51.95,lng:4.14}], distanceKm: 12800, durationHours: 396, riskPct: 40, explanation: "Balanced route offering good profitability with moderate risk." },
+  ],
+  "mumbai port→dubai port": [
+    { id: "direct", label: "Direct Arabian Sea", waypoints: [{lat:18.95,lng:72.84},{lat:20,lng:68},{lat:23,lng:60},{lat:25.01,lng:55.06}], distanceKm: 1900, durationHours: 72, riskPct: 15, explanation: "Direct short route across Arabian Sea. Minimal risk." },
+    { id: "coastal", label: "Coastal Route", waypoints: [{lat:18.95,lng:72.84},{lat:22,lng:69},{lat:24,lng:65},{lat:25,lng:58},{lat:25.01,lng:55.06}], distanceKm: 2200, durationHours: 84, riskPct: 8, explanation: "Hugs coastline for safer passage with port accessibility." },
+    { id: "offshore", label: "Offshore Route", waypoints: [{lat:18.95,lng:72.84},{lat:18,lng:66},{lat:21,lng:58},{lat:25.01,lng:55.06}], distanceKm: 2100, durationHours: 78, riskPct: 12, explanation: "Offshore path avoiding coastal congestion." },
+  ],
+  "mumbai port→jebel ali port": [
+    { id: "direct", label: "Direct Arabian Sea", waypoints: [{lat:18.95,lng:72.84},{lat:20,lng:68},{lat:23,lng:60},{lat:25.01,lng:55.06}], distanceKm: 1900, durationHours: 72, riskPct: 15, explanation: "Direct short route across Arabian Sea." },
+    { id: "coastal", label: "Coastal Route", waypoints: [{lat:18.95,lng:72.84},{lat:22,lng:69},{lat:24,lng:65},{lat:25,lng:58},{lat:25.01,lng:55.06}], distanceKm: 2200, durationHours: 84, riskPct: 8, explanation: "Hugs coastline for safer passage." },
+    { id: "offshore", label: "Offshore Route", waypoints: [{lat:18.95,lng:72.84},{lat:18,lng:66},{lat:21,lng:58},{lat:25.01,lng:55.06}], distanceKm: 2100, durationHours: 78, riskPct: 12, explanation: "Offshore path avoiding coastal congestion." },
+  ],
+  "jebel ali port→hamburg port": [
+    { id: "suez", label: "Suez Canal (Fastest)", waypoints: [{lat:25.01,lng:55.06},{lat:20,lng:50},{lat:12,lng:45},{lat:18,lng:40},{lat:30,lng:32},{lat:36,lng:18},{lat:53.54,lng:9.99}], distanceKm: 12500, durationHours: 384, riskPct: 65, explanation: "Fastest via Suez. Elevated risk in Red Sea region." },
+    { id: "cape", label: "Cape of Good Hope (Safer)", waypoints: [{lat:25.01,lng:55.06},{lat:15,lng:55},{lat:-5,lng:50},{lat:-25,lng:30},{lat:-35,lng:18},{lat:-15,lng:0},{lat:25,lng:-15},{lat:45,lng:-5},{lat:53.54,lng:9.99}], distanceKm: 18000, durationHours: 552, riskPct: 15, explanation: "Safe Cape route. Avoids all conflict zones." },
+    { id: "balanced", label: "Balanced Route", waypoints: [{lat:25.01,lng:55.06},{lat:18,lng:48},{lat:15,lng:42},{lat:25,lng:35},{lat:35,lng:22},{lat:42,lng:10},{lat:53.54,lng:9.99}], distanceKm: 14200, durationHours: 432, riskPct: 38, explanation: "Moderate risk with reasonable transit time." },
+  ],
+  "dubai port→hamburg port": [
+    { id: "suez", label: "Suez Canal (Fastest)", waypoints: [{lat:25.01,lng:55.06},{lat:20,lng:50},{lat:12,lng:45},{lat:18,lng:40},{lat:30,lng:32},{lat:36,lng:18},{lat:53.54,lng:9.99}], distanceKm: 12500, durationHours: 384, riskPct: 65, explanation: "Fastest via Suez. Elevated risk." },
+    { id: "cape", label: "Cape of Good Hope (Safer)", waypoints: [{lat:25.01,lng:55.06},{lat:15,lng:55},{lat:-5,lng:50},{lat:-25,lng:30},{lat:-35,lng:18},{lat:-15,lng:0},{lat:25,lng:-15},{lat:45,lng:-5},{lat:53.54,lng:9.99}], distanceKm: 18000, durationHours: 552, riskPct: 15, explanation: "Safe Cape route bypassing conflict zones." },
+    { id: "balanced", label: "Balanced Route", waypoints: [{lat:25.01,lng:55.06},{lat:18,lng:48},{lat:15,lng:42},{lat:25,lng:35},{lat:35,lng:22},{lat:42,lng:10},{lat:53.54,lng:9.99}], distanceKm: 14200, durationHours: 432, riskPct: 38, explanation: "Moderate risk with good efficiency." },
+  ],
+  "singapore port→chennai port": [
+    { id: "direct", label: "Direct Bay of Bengal", waypoints: [{lat:1.26,lng:103.84},{lat:5,lng:95},{lat:8,lng:88},{lat:13.10,lng:80.29}], distanceKm: 2800, durationHours: 96, riskPct: 12, explanation: "Direct route with low risk across Bay of Bengal." },
+    { id: "coastal", label: "Coastal Malacca Route", waypoints: [{lat:1.26,lng:103.84},{lat:3,lng:100},{lat:6,lng:94},{lat:9,lng:85},{lat:13.10,lng:80.29}], distanceKm: 3100, durationHours: 108, riskPct: 8, explanation: "Coastal route hugging shoreline for safety." },
+    { id: "offshore", label: "Offshore Route", waypoints: [{lat:1.26,lng:103.84},{lat:4,lng:98},{lat:7,lng:90},{lat:10,lng:83},{lat:13.10,lng:80.29}], distanceKm: 3000, durationHours: 102, riskPct: 10, explanation: "Offshore path avoiding congestion zones." },
+  ],
+  "mumbai port→melbourne port": [
+    { id: "direct", label: "Direct Indian Ocean", waypoints: [{lat:18.95,lng:72.84},{lat:10,lng:70},{lat:-10,lng:90},{lat:-25,lng:115},{lat:-37.84,lng:144.92}], distanceKm: 9200, durationHours: 288, riskPct: 20, explanation: "Direct route maximizing profit through shortest path." },
+    { id: "singapore", label: "Via Singapore (Lower Congestion)", waypoints: [{lat:18.95,lng:72.84},{lat:8,lng:78},{lat:1.5,lng:104},{lat:-10,lng:115},{lat:-25,lng:130},{lat:-37.84,lng:144.92}], distanceKm: 10800, durationHours: 336, riskPct: 10, explanation: "Routes via Singapore for lower congestion and port options." },
+    { id: "southern", label: "Southern Route (Weather Safer)", waypoints: [{lat:18.95,lng:72.84},{lat:5,lng:75},{lat:-15,lng:85},{lat:-30,lng:110},{lat:-38,lng:130},{lat:-37.84,lng:144.92}], distanceKm: 10200, durationHours: 312, riskPct: 14, explanation: "Southern path avoiding monsoon zones for weather safety." },
+  ],
+  "rotterdam port→cape town port": [
+    { id: "atlantic", label: "Atlantic Direct", waypoints: [{lat:51.95,lng:4.14},{lat:40,lng:-5},{lat:20,lng:-15},{lat:0,lng:-10},{lat:-20,lng:5},{lat:-33.92,lng:18.42}], distanceKm: 11100, durationHours: 360, riskPct: 18, explanation: "Direct Atlantic route with minimal detours." },
+    { id: "coastal_africa", label: "West Africa Coastal", waypoints: [{lat:51.95,lng:4.14},{lat:42,lng:-8},{lat:28,lng:-15},{lat:15,lng:-18},{lat:0,lng:-5},{lat:-15,lng:8},{lat:-33.92,lng:18.42}], distanceKm: 12200, durationHours: 396, riskPct: 22, explanation: "Follows West Africa coast with port access options." },
+    { id: "offshore_west", label: "Offshore Western", waypoints: [{lat:51.95,lng:4.14},{lat:38,lng:-12},{lat:18,lng:-22},{lat:-5,lng:-18},{lat:-22,lng:0},{lat:-33.92,lng:18.42}], distanceKm: 11800, durationHours: 384, riskPct: 15, explanation: "Offshore western route for best weather conditions." },
+  ],
+  "chennai port→singapore port": [
+    { id: "direct", label: "Direct Bay of Bengal", waypoints: [{lat:13.10,lng:80.29},{lat:8,lng:88},{lat:5,lng:95},{lat:1.26,lng:103.84}], distanceKm: 2800, durationHours: 96, riskPct: 12, explanation: "Direct route with efficient transit time." },
+    { id: "coastal", label: "Coastal Route", waypoints: [{lat:13.10,lng:80.29},{lat:10,lng:85},{lat:6,lng:94},{lat:3,lng:100},{lat:1.26,lng:103.84}], distanceKm: 3100, durationHours: 108, riskPct: 8, explanation: "Coastal path for maximum safety." },
+    { id: "nicobar", label: "Via Nicobar Islands", waypoints: [{lat:13.10,lng:80.29},{lat:10,lng:86},{lat:8,lng:92},{lat:4,lng:98},{lat:1.26,lng:103.84}], distanceKm: 3000, durationHours: 102, riskPct: 10, explanation: "Routes via Nicobar passage for balanced efficiency." },
+  ],
 };
+
+function findCorridor(originKey: string, destKey: string): CorridorSet | null {
+  return DEMO_CORRIDORS[`${originKey}→${destKey}`] || null;
+}
+
+
+
+function buildAnalysis(route: RouteData, shipmentValue: number, riskPct: number, explanation: string): Analysis {
+  const riskCost = Math.round((riskPct / 100) * shipmentValue * 0.2);
+  const timeCost = Math.round(route.durationHours * 500);
+  const distanceCost = Math.round(route.distanceKm * 0.3);
+  const expectedProfit = shipmentValue - riskCost - timeCost - distanceCost;
+  const classification: "Low"|"Medium"|"High" = riskPct > 50 ? "High" : riskPct > 25 ? "Medium" : "Low";
+  const insurance_cost = shipmentValue * (0.005 + (riskPct / 100) * 0.01);
+  return {
+    source: "RouteOptix Intelligence",
+    delayProbability: riskPct,
+    classification,
+    contributors: [
+      { name: "Geopolitical", value: classification === "High" ? 75 : classification === "Medium" ? 40 : 15 },
+      { name: "Weather", value: classification === "High" ? 45 : 25 },
+      { name: "Congestion", value: classification === "High" ? 60 : 30 },
+      { name: "Piracy", value: classification === "High" ? 55 : 5 },
+    ],
+    recommendation: expectedProfit > shipmentValue * 0.7 ? "Recommended route offers best profitability despite slightly longer distance." : riskPct > 50 ? "Consider re-routing via safer corridor to improve profitability." : "Proceed with standard precautions.",
+    explanation,
+    insurance: { basePremium: Math.round(shipmentValue * 0.005), adjustedPremium: Math.round(insurance_cost), adjustedRatePct: Number(((insurance_cost / shipmentValue) * 100).toFixed(2)) },
+    cost: { transportCost: Math.round(route.distanceKm * 0.5), riskCost, timeCost, distanceCost, expectedProfit },
+    smartPorts: [],
+    recoveryPlan: { nearestWarehouse: "Primary Hub", alternateModes: ["Air", "Rail"], potentialDelayReductionHours: 24, potentialSavings: 25000, suggestedPort: "Nearest Hub" },
+    riskZones: [],
+  };
+}
+
 
 export default function App() {
   const [isDark, setIsDark] = useState<boolean>(() => {
-    const saved = localStorage.getItem("kairos-theme");
+    const saved = localStorage.getItem("routeoptix-theme");
     return saved ? saved === "dark" : false;
   });
   const [form, setForm] = useState(defaultForm);
@@ -178,63 +234,35 @@ export default function App() {
     setLoading(true);
     setGeocodingError(null);
     try {
-      // 1. Geocoding via Nominatim
-      const geocode = async (q: string) => {
-        const { data } = await axios.get(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=1`);
-        if (data && data.length > 0) {
-          return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
-        }
-        return null;
-      };
+      const orig = resolveDemo(form.origin);
+      const dest = resolveDemo(form.destination);
+      if (!orig || !dest) { setGeocodingError("This corridor is not supported in the demo version yet."); setLoading(false); return; }
 
-      const orig = await geocode(form.origin);
-      const dest = await geocode(form.destination);
+      const corridorSet = findCorridor(orig.key, dest.key);
+      if (!corridorSet) { setGeocodingError("This corridor is not supported in the demo version yet."); setLoading(false); return; }
 
-      if (!orig || !dest) {
-        setGeocodingError(`Could not find ${!orig ? "origin" : "destination"}. Please try a more specific name.`);
-        setLoading(false);
-        return;
-      }
-
-      // 2. Route Computation (Simulated/Backend)
-      const routeRes = await api.post("/routes/compute", { origin: form.origin, destination: form.destination });
-      const baseRoutes: RouteData[] = routeRes.data.routes || [];
-      
-      // Expand to 3 decision routes
-      const computedRoutes: RouteData[] = [
-        { ...baseRoutes[0], id: "suez", label: "Suez Canal Route", durationHours: baseRoutes[0].durationHours, distanceKm: baseRoutes[0].distanceKm },
-        { ...baseRoutes[0], id: "cape", label: "Cape of Good Hope", durationHours: baseRoutes[0].durationHours * 1.4, distanceKm: baseRoutes[0].distanceKm * 1.35 },
-        { ...baseRoutes[0], id: "trans", label: "Transshipment (Singapore)", durationHours: baseRoutes[0].durationHours * 1.2, distanceKm: baseRoutes[0].distanceKm * 1.15 }
-      ];
-
-      setRouteSource(routeRes.data.source || "estimated");
-
-      const routesWithWaypoints = computedRoutes.map((r) => ({
-        ...r,
-        waypoints: getMaritimeWaypoints(orig, dest, r.id as "suez" | "cape" | "transshipment")
+      // Build routes from templates
+      const computedRoutes: RouteData[] = corridorSet.map(t => ({
+        id: t.id, label: t.label, distanceKm: t.distanceKm, durationHours: t.durationHours, waypoints: t.waypoints,
       }));
-      
-      setRoutes(routesWithWaypoints);
-      setOriginCoord(orig);
-      setDestinationCoord(dest);
+      setRoutes(computedRoutes);
+      setOriginCoord(orig.coord);
+      setDestinationCoord(dest.coord);
+      setRouteSource("RouteOptix Intelligence");
 
-      const routeAnalyses = await Promise.all(computedRoutes.map((route) => analyzeSingleRoute(route, form, whatIf, orig)));
-      const mapped = computedRoutes.reduce<Record<string, Analysis>>((acc, route, idx) => {
-        // Adjust risk logic for decision engine
-        if (route.id === "cape") {
-          routeAnalyses[idx].delayProbability = Math.max(5, routeAnalyses[idx].delayProbability - 25);
-          routeAnalyses[idx].classification = "Low";
-          routeAnalyses[idx].insurance.adjustedPremium *= 0.7;
-        } else if (route.id === "suez") {
-          routeAnalyses[idx].delayProbability = Math.min(95, routeAnalyses[idx].delayProbability + 20);
-          routeAnalyses[idx].classification = "High";
-        }
-        
-        acc[route.id] = routeAnalyses[idx];
-        return acc;
-      }, {});
+      // Build analyses locally with profit model
+      const mapped: Record<string, Analysis> = {};
+      corridorSet.forEach(t => {
+        const route = computedRoutes.find(r => r.id === t.id)!;
+        mapped[t.id] = buildAnalysis(route, form.shipmentValue, t.riskPct, t.explanation);
+      });
       setAnalyses(mapped);
-      setSelectedRouteId("cape"); // Default to safer recommended route
+
+      // Select route with HIGHEST expected profit
+      const recommended = computedRoutes.reduce((best, r) =>
+        (mapped[r.id]?.cost?.expectedProfit || 0) > (mapped[best.id]?.cost?.expectedProfit || 0) ? r : best
+      );
+      setSelectedRouteId(recommended.id);
     } catch (err) {
       console.error("Analysis failed", err);
       setGeocodingError("Analysis failed. Please check your connection.");
@@ -242,6 +270,8 @@ export default function App() {
       setLoading(false);
     }
   };
+
+
 
   const resetForm = () => {
     setForm(defaultForm);
@@ -276,7 +306,7 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = "kairos-shield-report.json";
+    anchor.download = "routeoptix-report.json";
     anchor.click();
     URL.revokeObjectURL(url);
   };
@@ -297,15 +327,14 @@ export default function App() {
 
   const chartFinancial = selectedAnalysis
     ? [
-        { name: "Transport", value: selectedAnalysis.cost.transportCost },
-        { name: "Delay", value: selectedAnalysis.cost.delayCost },
-        { name: "Storage", value: selectedAnalysis.cost.storageCost },
-        { name: "Penalty", value: selectedAnalysis.cost.penaltyCost },
+        { name: "Risk Cost", value: selectedAnalysis.cost.riskCost },
+        { name: "Time Cost", value: selectedAnalysis.cost.timeCost },
+        { name: "Distance Cost", value: selectedAnalysis.cost.distanceCost },
       ]
     : [];
 
   useEffect(() => {
-    localStorage.setItem("kairos-theme", isDark ? "dark" : "light");
+    localStorage.setItem("routeoptix-theme", isDark ? "dark" : "light");
   }, [isDark]);
 
   return (
@@ -314,8 +343,8 @@ export default function App() {
       <header className="border-b border-slate-200 bg-white px-5 py-4 shadow-sm transition-colors dark:border-slate-800 dark:bg-slate-900">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-semibold text-slate-800 dark:text-slate-100">Kairos Shield</h1>
-            <p className="text-sm text-slate-500 dark:text-slate-400">AI-powered supply chain intelligence</p>
+            <h1 className="text-2xl font-semibold text-slate-800 dark:text-slate-100">RouteOptix</h1>
+            <p className="text-sm text-slate-500 dark:text-slate-400">AI-powered maritime route intelligence</p>
           </div>
           <div className="flex items-center gap-2">
             <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">Live Intelligence</span>
@@ -427,8 +456,8 @@ export default function App() {
               {(mapView === "route" || mapView === "risk") &&
                 routes.map((route, index) => (
                   <Polyline 
-                    key={route.id} 
-                    positions={(route.waypoints || [originCoord, destinationCoord]).map(p => [p.lat, p.lng]) as L.LatLngExpression[]} 
+                    key={`${selectedRouteId}-${route.id}-${(route.waypoints||[]).length}`} 
+                    positions={(route.waypoints || []).map(p => [p.lat, p.lng]) as L.LatLngExpression[]} 
                     pathOptions={{ 
                       color: selectedRouteId === route.id ? "#2563eb" : index === 1 ? "#10b981" : "#94a3b8", 
                       weight: selectedRouteId === route.id ? 6 : 3, 
@@ -479,13 +508,13 @@ export default function App() {
                 <span className="text-xs font-bold uppercase tracking-wider opacity-80">Top Recommendation</span>
                 <ShieldCheck size={18} />
               </div>
-              <p className="mt-1 text-lg font-bold">Cape of Good Hope</p>
+              <p className="mt-1 text-lg font-bold">{routes.find(r => r.id === selectedRouteId)?.label || "Recommended Route"}</p>
               <div className="mt-2 flex items-baseline gap-1">
-                <span className="text-2xl font-bold">₹{(analyses["suez"]?.cost.totalExpectedLoss || 0 - (analyses["cape"]?.cost.totalExpectedLoss || 0)).toLocaleString()}</span>
-                <span className="text-xs opacity-80">Estimated Savings</span>
+                <span className="text-2xl font-bold">₹{(selectedAnalysis?.cost.expectedProfit || 0).toLocaleString()}</span>
+                <span className="text-xs opacity-80">Expected Profit</span>
               </div>
               <p className="mt-2 text-xs leading-relaxed opacity-90">
-                Recommended due to high volatility in the Red Sea. Savings primarily from significantly lower insurance premiums and zero piracy risk.
+                {selectedAnalysis?.explanation} {selectedAnalysis?.recommendation}
               </p>
             </motion.div>
           )}
@@ -503,21 +532,22 @@ export default function App() {
 
           <div className="space-y-2 pt-1">
             <p className="text-xs font-bold text-slate-500 uppercase px-1">Risk Breakdown</p>
-            <RiskBar label="Geopolitical" value={selectedRouteId === "suez" ? 85 : 12} color="bg-rose-500" />
-            <RiskBar label="Weather" value={selectedRouteId === "cape" ? 65 : 30} color="bg-blue-500" />
-            <RiskBar label="Port Congestion" value={selectedRouteId === "suez" ? 70 : 40} color="bg-amber-500" />
+            {selectedAnalysis?.contributors.map((c, i) => (
+              <RiskBar key={c.name} label={c.name} value={c.value} color={i === 0 ? "bg-rose-500" : i === 1 ? "bg-blue-500" : i === 2 ? "bg-amber-500" : "bg-indigo-500"} />
+            ))}
             <RiskBar label="Insurance Risk" value={selectedAnalysis?.insurance.adjustedRatePct || 0} color="bg-indigo-500" />
           </div>
 
           <InfoRow icon={<AlertTriangle size={14} />} title="AI Explanation" value={selectedAnalysis?.explanation || "Run analysis"} />
           <InfoRow icon={<MapPin size={14} />} title="Recommended Action" value={selectedAnalysis?.recommendation || "Not available"} />
           <div className="rounded-lg border border-slate-200 p-3 text-sm dark:border-slate-700 dark:bg-slate-800/60">
-            <p className="font-medium text-slate-900 dark:text-slate-100">Financial Impact</p>
+            <p className="font-medium text-slate-900 dark:text-slate-100">Profitability</p>
             <div className="mt-1 space-y-1 text-xs">
-              <div className="flex justify-between"><span>Insurance</span><span>₹{(selectedAnalysis?.insurance.adjustedPremium || 0).toLocaleString()}</span></div>
-              <div className="flex justify-between"><span>Delay Loss</span><span>₹{(selectedAnalysis?.cost.delayCost || 0).toLocaleString()}</span></div>
-              <div className="flex justify-between font-bold border-t border-slate-100 dark:border-slate-700 pt-1 mt-1 text-rose-600">
-                <span>Expected Loss</span><span>₹{(selectedAnalysis?.cost.totalExpectedLoss || 0).toLocaleString()}</span>
+              <div className="flex justify-between"><span>Risk Cost</span><span>₹{(selectedAnalysis?.cost.riskCost || 0).toLocaleString()}</span></div>
+              <div className="flex justify-between"><span>Time Cost</span><span>₹{(selectedAnalysis?.cost.timeCost || 0).toLocaleString()}</span></div>
+              <div className="flex justify-between"><span>Distance Cost</span><span>₹{(selectedAnalysis?.cost.distanceCost || 0).toLocaleString()}</span></div>
+              <div className={`flex justify-between font-bold border-t border-slate-100 dark:border-slate-700 pt-1 mt-1 ${(selectedAnalysis?.cost.expectedProfit || 0) > 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                <span>Expected Profit</span><span>₹{(selectedAnalysis?.cost.expectedProfit || 0).toLocaleString()}</span>
               </div>
             </div>
           </div>
@@ -536,7 +566,7 @@ export default function App() {
               <div className="grid grid-cols-3 gap-4">
                 {routes.map((route) => {
                   const analysis = analyses[route.id];
-                  const isRecommended = route.id === "cape";
+                  const isRecommended = route.id === selectedRouteId;
                   const isSelected = selectedRouteId === route.id;
                   
                   return (
@@ -557,11 +587,11 @@ export default function App() {
                         <span>Time:</span><span className="text-right font-medium">{Math.round(route.durationHours / 24)} days</span>
                         <span>Distance:</span><span className="text-right font-medium">{route.distanceKm.toLocaleString()} km</span>
                         <span>Risk:</span><span className={`text-right font-bold ${analysis?.delayProbability > 70 ? "text-rose-600" : "text-emerald-600"}`}>{analysis?.delayProbability}%</span>
-                        <span>Expected Loss:</span><span className="text-right font-medium text-slate-900">₹{(analysis?.cost.totalExpectedLoss || 0).toLocaleString()}</span>
+                        <span>Profit:</span><span className={`text-right font-bold ${(analysis?.cost.expectedProfit || 0) > (form.shipmentValue * 0.5) ? "text-emerald-600" : (analysis?.cost.expectedProfit || 0) > 0 ? "text-amber-600" : "text-rose-600"}`}>₹{(analysis?.cost.expectedProfit || 0).toLocaleString()}</span>
                       </div>
                       <div className="mt-3 flex gap-1">
-                        <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase ${route.id === "suez" ? "bg-amber-100 text-amber-700" : route.id === "cape" ? "bg-emerald-100 text-emerald-700" : "bg-blue-100 text-blue-700"}`}>
-                          {route.id === "suez" ? "Fastest" : route.id === "cape" ? "Safest" : "Balanced"}
+                        <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase ${analysis?.classification === "High" ? "bg-rose-100 text-rose-700" : analysis?.classification === "Medium" ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"}`}>
+                          {analysis?.classification || "--"} Risk
                         </span>
                       </div>
                     </button>
@@ -577,7 +607,7 @@ export default function App() {
                       <th className="px-4 py-3">Transit Time</th>
                       <th className="px-4 py-3">Risk Level</th>
                       <th className="px-4 py-3">Insurance</th>
-                      <th className="px-4 py-3">Financial Impact</th>
+                      <th className="px-4 py-3">Expected Profit</th>
                       <th className="px-4 py-3">Verdict</th>
                     </tr>
                   </thead>
@@ -587,12 +617,12 @@ export default function App() {
                       return (
                         <tr key={r.id} className={selectedRouteId === r.id ? "bg-blue-50/20" : ""}>
                           <td className="px-4 py-3 font-semibold">{r.label}</td>
-                          <td className={`px-4 py-3 ${r.id === "suez" ? "text-emerald-600 font-bold" : ""}`}>{Math.round(r.durationHours / 24)} days</td>
+                          <td className="px-4 py-3">{Math.round(r.durationHours / 24)} days</td>
                           <td className={`px-4 py-3 ${ana?.delayProbability < 30 ? "text-emerald-600 font-bold" : ana?.delayProbability > 70 ? "text-rose-600" : ""}`}>{ana?.delayProbability}%</td>
                           <td className="px-4 py-3">₹{(ana?.insurance.adjustedPremium || 0).toLocaleString()}</td>
-                          <td className={`px-4 py-3 font-bold ${r.id === "cape" ? "text-emerald-600" : "text-rose-600"}`}>₹{(ana?.cost.totalExpectedLoss || 0).toLocaleString()}</td>
+                          <td className={`px-4 py-3 font-bold ${(ana?.cost.expectedProfit || 0) > (form.shipmentValue * 0.5) ? "text-emerald-600" : (ana?.cost.expectedProfit || 0) > 0 ? "text-amber-600" : "text-rose-600"}`}>₹{(ana?.cost.expectedProfit || 0).toLocaleString()}</td>
                           <td className="px-4 py-3 italic opacity-70">
-                            {r.id === "suez" ? "Vulnerable to Red Sea delays" : r.id === "cape" ? "Bypasses high-risk zones" : "Transshipment overhead"}
+                            {ana?.recommendation || "--"}
                           </td>
                         </tr>
                       );
@@ -627,7 +657,7 @@ export default function App() {
           )}
           {tab === "Financial Impact" && (
             <div className="grid grid-cols-2 gap-4">
-              <ChartCard title="Loss Components">
+              <ChartCard title="Cost Factors">
                 <ResponsiveContainer width="100%" height={220}>
                   <BarChart data={chartFinancial}>
                     <CartesianGrid strokeDasharray="3 3" />
@@ -639,12 +669,12 @@ export default function App() {
                 </ResponsiveContainer>
               </ChartCard>
               <div className="rounded-lg border border-slate-200 p-4 text-sm">
-                <p className="font-semibold">Financial Impact Summary</p>
-                <p>Transport Cost: ₹{(selectedAnalysis?.cost.transportCost || 0).toLocaleString()}</p>
-                <p>Delay Cost: ₹{(selectedAnalysis?.cost.delayCost || 0).toLocaleString()}</p>
-                <p>Storage Cost: ₹{(selectedAnalysis?.cost.storageCost || 0).toLocaleString()}</p>
-                <p>Penalty Cost: ₹{(selectedAnalysis?.cost.penaltyCost || 0).toLocaleString()}</p>
-                <p className="mt-2 text-base font-semibold text-rose-600">Total Expected Loss: ₹{(selectedAnalysis?.cost.totalExpectedLoss || 0).toLocaleString()}</p>
+                <p className="font-semibold">Profitability Summary</p>
+                <p>Shipment Value: ₹{form.shipmentValue.toLocaleString()}</p>
+                <p>Risk Cost: ₹{(selectedAnalysis?.cost.riskCost || 0).toLocaleString()}</p>
+                <p>Time Cost: ₹{(selectedAnalysis?.cost.timeCost || 0).toLocaleString()}</p>
+                <p>Distance Cost: ₹{(selectedAnalysis?.cost.distanceCost || 0).toLocaleString()}</p>
+                <p className={`mt-2 text-base font-semibold ${(selectedAnalysis?.cost.expectedProfit || 0) > 0 ? "text-emerald-600" : "text-rose-600"}`}>Expected Profit: ₹{(selectedAnalysis?.cost.expectedProfit || 0).toLocaleString()}</p>
               </div>
             </div>
           )}
@@ -685,7 +715,7 @@ export default function App() {
                 <p>Delay Probability: {selectedAnalysis?.delayProbability || 0}%</p>
                 <p>Risk Class: {selectedAnalysis?.classification || "-"}</p>
                 <p>Adjusted Premium: ₹{(selectedAnalysis?.insurance.adjustedPremium || 0).toLocaleString()}</p>
-                <p>Expected Loss: ₹{(selectedAnalysis?.cost.totalExpectedLoss || 0).toLocaleString()}</p>
+                <p className={`font-semibold ${(selectedAnalysis?.cost.expectedProfit || 0) > 0 ? "text-emerald-600" : "text-rose-600"}`}>Expected Profit: ₹{(selectedAnalysis?.cost.expectedProfit || 0).toLocaleString()}</p>
                 <p className="mt-2 text-slate-600">{selectedAnalysis?.recommendation || "-"}</p>
               </div>
             </div>
